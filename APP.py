@@ -63,8 +63,6 @@ if st.session_state.current_tab == "Home":
     else:
         # Camera Flow
         if not st.session_state.is_confirmed:
-            # Streamlit camera_input uses the browser's default. 
-            # On mobile, the browser usually provides a UI to switch to the back camera.
             st.info("💡 Tip: Use your phone's back camera for better results.")
             cam_image = st.camera_input("Take a photo of the ID card")
             
@@ -100,42 +98,55 @@ if st.session_state.current_tab == "Home":
                 # Unpack results
                 f_name, s_name, full_name, n_id, addr, bday, gov, gen = results_data
 
-                results_dict = {
-                    'First Name': f_name,
-                    'Second Name': s_name,
-                    'Full Name': full_name,
-                    'National ID': n_id,
-                    'Address': addr,
-                    'Birth Date': bday,
-                    'Governorate': gov,
-                    'Gender': gen
-                }
+                # Basic validation: if everything is empty, the detection likely failed
+                if not any([f_name, s_name, n_id, addr]) or n_id == "":
+                    st.warning("⚠️ Could not detect ID card details clearly. Please try again with better lighting or a closer shot.")
+                    if st.button("Try Again"):
+                        st.session_state.captured_image = None
+                        st.session_state.is_confirmed = False
+                        st.rerun()
+                else:
+                    results_dict = {
+                        'First Name': f_name,
+                        'Second Name': s_name,
+                        'Full Name': full_name,
+                        'National ID': n_id,
+                        'Address': addr,
+                        'Birth Date': bday,
+                        'Governorate': gov,
+                        'Gender': gen
+                    }
 
-                # Display Processed Image (if available from utils)
-                if os.path.exists("d2.jpg"):
-                    st.image("d2.jpg", caption="Detection Results", use_container_width=True)
+                    # Display Processed Image (if available from utils)
+                    if os.path.exists("d2.jpg"):
+                        st.image("d2.jpg", caption="Detection Results", use_container_width=True)
 
-                st.success("✅ Extraction Complete!")
-                
-                # Show results in a structured way
-                st.subheader("📝 Extracted Information")
-                for key, val in results_dict.items():
-                    st.write(f"**{key}:** {val}")
+                    st.success("✅ Extraction Complete!")
+                    
+                    # Show results in a structured way
+                    st.subheader("📝 Extracted Information")
+                    for key, val in results_dict.items():
+                        st.write(f"**{key}:** {val}")
 
-                # Save Button
-                if st.button("💾 Save to Excel Database", use_container_width=True):
-                    # Duplicate check
-                    db = st.session_state.id_database
-                    if str(n_id) in db['National ID'].astype(str).values:
-                        st.warning(f"⚠️ ID {n_id} already exists in the database.")
-                    else:
-                        new_row = pd.DataFrame([results_dict])
-                        st.session_state.id_database = pd.concat([db, new_row], ignore_index=True)
-                        save_data(st.session_state.id_database)
-                        st.success("🎉 Data saved successfully!")
+                    # Save Button
+                    if st.button("💾 Save to Excel Database", use_container_width=True):
+                        # Duplicate check
+                        db = st.session_state.id_database
+                        if str(n_id) in db['National ID'].astype(str).values:
+                            st.warning(f"⚠️ ID {n_id} already exists in the database.")
+                        else:
+                            new_row = pd.DataFrame([results_dict])
+                            st.session_state.id_database = pd.concat([db, new_row], ignore_index=True)
+                            save_data(st.session_state.id_database)
+                            st.success("🎉 Data saved successfully!")
 
             except Exception as e:
                 st.error(f"❌ Error: {str(e)}")
+                st.info("This error usually happens if the ID card is not detected. Please try to take a clearer photo.")
+                if st.button("Retry"):
+                    st.session_state.captured_image = None
+                    st.session_state.is_confirmed = False
+                    st.rerun()
             finally:
                 if 'tmp_path' in locals() and os.path.exists(tmp_path):
                     os.remove(tmp_path)
