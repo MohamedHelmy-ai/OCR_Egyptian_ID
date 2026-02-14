@@ -7,7 +7,7 @@ import io
 from utils import detect_and_process_id_card
 
 # Streamlit configuration
-st.set_page_config(page_title='ID Egyptian Card ', page_icon='💳', layout='wide')
+st.set_page_config(page_title='Egyptian ID OCR', page_icon='💳', layout='wide')
 
 # --- PERSISTENCE LOGIC ---
 DB_FILE = "database.xlsx"
@@ -23,141 +23,158 @@ def load_data():
 def save_data(df):
     df.to_excel(DB_FILE, index=False)
 
-# Initialize database in session state from file
+# Initialize session state
 if 'id_database' not in st.session_state:
     st.session_state.id_database = load_data()
 
-# Initialize session state for navigation
 if "current_tab" not in st.session_state:
     st.session_state.current_tab = "Home"
 
+if 'captured_image' not in st.session_state:
+    st.session_state.captured_image = None
+
+if 'is_confirmed' not in st.session_state:
+    st.session_state.is_confirmed = False
+
 # Sidebar navigation menu
 tabs = ["Home", "Guide"]
-selected_tab = st.sidebar.radio("Navigation", tabs)
-st.session_state.current_tab = selected_tab
+st.sidebar.title("Navigation")
+st.session_state.current_tab = st.sidebar.radio("Go to", tabs, index=tabs.index(st.session_state.current_tab))
 
-# Home Tab
 if st.session_state.current_tab == "Home":
-    uploaded_file = st.sidebar.file_uploader("Upload an ID card image",
-                                             type=['webp', 'jpg', 'tif', 'tiff', 'png', 'mpo', 'bmp', 'jpeg', 'dng', 'pfm'])
+    st.title("💳 Egyptian ID Card OCR")
+    
+    # Sidebar options
+    st.sidebar.subheader("Settings")
+    input_method = st.sidebar.radio("Input Method", ["Camera Capture", "File Upload"])
+    
+    if st.sidebar.button("🔄 Reset / New Scan"):
+        st.session_state.captured_image = None
+        st.session_state.is_confirmed = False
+        st.rerun()
 
-    if not uploaded_file:
-        # Check if ocr2.png exists before showing
+    final_image_file = None
+
+    if input_method == "File Upload":
+        uploaded_file = st.file_uploader("Upload ID card image", type=['webp', 'jpg', 'jpeg', 'png', 'bmp'])
+        if uploaded_file:
+            final_image_file = uploaded_file
+            st.session_state.is_confirmed = True # Auto-confirm for uploads
+    else:
+        # Camera Flow
+        if not st.session_state.is_confirmed:
+            # Streamlit camera_input uses the browser's default. 
+            # On mobile, the browser usually provides a UI to switch to the back camera.
+            st.info("💡 Tip: Use your phone's back camera for better results.")
+            cam_image = st.camera_input("Take a photo of the ID card")
+            
+            if cam_image:
+                st.session_state.captured_image = cam_image
+                st.image(cam_image, caption="Review your photo", use_container_width=True)
+                
+                col1, col2 = st.columns(2)
+                with col1:
+                    if st.button("✅ Confirm & Scan", use_container_width=True):
+                        st.session_state.is_confirmed = True
+                        st.rerun()
+                with col2:
+                    if st.button("🔄 Retake Photo", use_container_width=True):
+                        st.session_state.captured_image = None
+                        st.session_state.is_confirmed = False
+                        st.rerun()
+        else:
+            final_image_file = st.session_state.captured_image
+
+    # Processing and Results
+    if final_image_file and st.session_state.is_confirmed:
+        with st.spinner("🔍 Scanning ID Card..."):
+            try:
+                # Save to temporary file for processing
+                with tempfile.NamedTemporaryFile(delete=False, suffix=".jpg") as tmp:
+                    tmp.write(final_image_file.getvalue())
+                    tmp_path = tmp.name
+
+                # Perform OCR
+                results_data = detect_and_process_id_card(tmp_path)
+                
+                # Unpack results
+                f_name, s_name, full_name, n_id, addr, bday, gov, gen = results_data
+
+                results_dict = {
+                    'First Name': f_name,
+                    'Second Name': s_name,
+                    'Full Name': full_name,
+                    'National ID': n_id,
+                    'Address': addr,
+                    'Birth Date': bday,
+                    'Governorate': gov,
+                    'Gender': gen
+                }
+
+                # Display Processed Image (if available from utils)
+                if os.path.exists("d2.jpg"):
+                    st.image("d2.jpg", caption="Detection Results", use_container_width=True)
+
+                st.success("✅ Extraction Complete!")
+                
+                # Show results in a structured way
+                st.subheader("📝 Extracted Information")
+                for key, val in results_dict.items():
+                    st.write(f"**{key}:** {val}")
+
+                # Save Button
+                if st.button("💾 Save to Excel Database", use_container_width=True):
+                    # Duplicate check
+                    db = st.session_state.id_database
+                    if str(n_id) in db['National ID'].astype(str).values:
+                        st.warning(f"⚠️ ID {n_id} already exists in the database.")
+                    else:
+                        new_row = pd.DataFrame([results_dict])
+                        st.session_state.id_database = pd.concat([db, new_row], ignore_index=True)
+                        save_data(st.session_state.id_database)
+                        st.success("🎉 Data saved successfully!")
+
+            except Exception as e:
+                st.error(f"❌ Error: {str(e)}")
+            finally:
+                if 'tmp_path' in locals() and os.path.exists(tmp_path):
+                    os.remove(tmp_path)
+
+    elif not final_image_file and not st.session_state.is_confirmed:
+        # Welcome screen / Placeholder
         if os.path.exists("ocr2.png"):
             st.image("ocr2.png", use_container_width=True)
         else:
-            st.info("Welcome! Please upload an ID card image from the sidebar to begin.")
-    else:
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".jpg") as temp_file:
-            temp_file.write(uploaded_file.read())
-            temp_file_path = temp_file.name
+            st.info("Welcome! Please capture a photo or upload an image to start scanning.")
 
-        image = Image.open(temp_file_path)
-        st.subheader('Egyptian ID Card EXTRACTING, OCR 💳')
-        st.sidebar.image(image)
-
-        try:
-            # Call the detect_and_process_id_card function
-            first_name, second_name, Full_name, national_id, address, birth, gov, gender = detect_and_process_id_card(temp_file_path)
-            
-            results = {
-                'First Name': first_name,
-                'Second Name': second_name,
-                'Full Name': Full_name,
-                'National ID': national_id,
-                'Address': address,
-                'Birth Date': birth,
-                'Governorate': gov,
-                'Gender': gender
-            }
-
-            if os.path.exists("d2.jpg"):
-                st.image(Image.open("d2.jpg"), use_container_width=True)
-            
-            st.markdown("---")
-            st.markdown(" ## WORDS EXTRACTED : ")
-            
-            for key, value in results.items():
-                st.write(f"**{key}:** {value}")
-
-            if st.button("💾 Save this ID to Excel"):
-                # Check for duplicates
-                if str(results['National ID']) in st.session_state.id_database['National ID'].astype(str).values:
-                    st.error(f"❌ Duplicate Found! ID {results['National ID']} is already in the list.")
-                else:
-                    new_entry = pd.DataFrame([results])
-                    st.session_state.id_database = pd.concat([st.session_state.id_database, new_entry], ignore_index=True)
-                    # Save to physical file for persistence
-                    save_data(st.session_state.id_database)
-                    st.success(f"✅ ID {results['National ID']} saved permanently!")
-
-        except Exception as e:
-            st.error(f"An error occurred: {e}")
-        finally:
-            if os.path.exists(temp_file_path):
-                os.remove(temp_file_path)
-
-    # --- DOWNLOAD & VIEW SECTION ---
-    st.divider()
-    st.subheader("📋 Scanned IDs List (Persistent)")
-    
-    # Add a button to clear the database if needed
+    # Show Database
     if not st.session_state.id_database.empty:
-        if st.sidebar.button("🗑️ Clear All Data"):
-            st.session_state.id_database = pd.DataFrame(columns=['First Name', 'Second Name', 'Full Name', 'National ID', 'Address', 'Birth Date', 'Governorate', 'Gender'])
-            if os.path.exists(DB_FILE):
-                os.remove(DB_FILE)
-            st.rerun()
-
-    st.dataframe(st.session_state.id_database)
-    
-    if not st.session_state.id_database.empty:
-        buffer = io.BytesIO()
-        with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
-            st.session_state.id_database.to_excel(writer, index=False)
+        st.markdown("---")
+        st.subheader("📋 Saved Records")
+        st.dataframe(st.session_state.id_database, use_container_width=True)
         
+        # Download
+        buffer = io.BytesIO()
+        st.session_state.id_database.to_excel(buffer, index=False)
         st.download_button(
-            label="📥 Download All Results as Excel",
+            label="📥 Download Excel Report",
             data=buffer.getvalue(),
-            file_name="scanned_ids.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            file_name="id_records.xlsx",
+            mime="application/vnd.ms-excel"
         )
 
-# Documentation Tab
 elif st.session_state.current_tab == "Guide":
-    st.title("How to use our application 📖")
-    st.write("""
-   ## Project Overview:
-    This application processes Egyptian ID cards to extract key information, including names, addresses, and national IDs.  
-    It also decodes the national ID to provide additional details like birth date, governorate, and gender.
-
-    ## Features:
-    - **ID Card Detection**: Automatically detects and crops the ID card from the image.
-    - **Field Detection**: Identifies key fields such as first name, last name, address, and serial number.
-    - **Text Extraction**: Extracts Arabic and English text using EasyOCR.
-    - **National ID Decoding**: Decodes the ID to extract:
-        - Birth Date
-        - Governorate
-        - Gender
-        - Birthplace
-        - Location
-        - Nationality
-
-    ## How It Works:
-    1. **Upload an Image**: Upload an image of the ID card using the sidebar.
-    2. **Detection and Extraction**:
-        - YOLO models detect the ID card and its fields.
-        - EasyOCR extracts text from the identified fields.
-    3. **Result Presentation**:
-        - Outputs extracted information such as full name, address, and national ID details.
-    4. **ID Decoding**:
-        - Decodes the national ID to reveal demographic details.
-
-    ## Steps to Use:
-    - Get your image ready.
-    - Click on Home.
-    - Upload an Egyptian ID card image.
-    - View the extracted information and analysis.
-        
-    ## هI HOPE YOU ENJOY THE EXPERIENCE 💖
+    st.title("📖 User Guide")
+    st.markdown("""
+    ### Steps to use:
+    1. **Choose Input**: Use 'Camera Capture' for real-time scanning or 'File Upload' for saved images.
+    2. **Take Photo**: Align the ID card in the frame. On mobile, use the **back camera** for best quality.
+    3. **Preview**: After taking a photo, you can see it on screen.
+    4. **Confirm/Retake**: If the photo is clear, click **Confirm & Scan**. If not, click **Retake**.
+    5. **Review & Save**: Check the extracted text and click **Save to Excel Database**.
+    
+    ### Tips for Best Results:
+    * **Lighting**: Avoid direct sunlight or strong glare on the card.
+    * **Stability**: Hold the phone steady while capturing.
+    * **Alignment**: Keep the card straight and centered.
     """)
