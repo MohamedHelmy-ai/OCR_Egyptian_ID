@@ -2,10 +2,20 @@ import os
 import tempfile
 from PIL import Image
 import streamlit as st
+import pandas as pd
+import io
 from utils import detect_and_process_id_card
 
 # Streamlit configuration
 st.set_page_config(page_title='ID Egyptian Card ', page_icon='💳', layout='wide')
+
+# --- 1. Setup the Database (Session State keeps it active for multiple scans) ---
+if 'id_database' not in st.session_state:
+    st.session_state.id_database = pd.DataFrame(columns=[
+        'First Name', 'Second Name', 'Full Name', 
+        'National ID', 'Address', 'Birth Date', 
+        'Governorate', 'Gender'
+    ])
 
 # Initialize session state for navigation
 if "current_tab" not in st.session_state:
@@ -40,22 +50,59 @@ if st.session_state.current_tab == "Home":
         try:
             # Call the detect_and_process_id_card function
             first_name, second_name, Full_name, national_id, address, birth, gov, gender = detect_and_process_id_card(temp_file_path)
+            
+            # Create a results dictionary for the Excel logic
+            results = {
+                'First Name': first_name,
+                'Second Name': second_name,
+                'Full Name': Full_name,
+                'National ID': national_id,
+                'Address': address,
+                'Birth Date': birth,
+                'Governorate': gov,
+                'Gender': gender
+            }
+
             st.image(Image.open("d2.jpg"), use_container_width=True)
             st.markdown("---")
             st.markdown(" ## WORDS EXTRACTED : ")
-            st.write(f"First Name: {first_name}")
-            st.write(f"Second Name: {second_name}")
-            st.write(f"Full Name: {Full_name}")
-            st.write(f"National ID: {national_id}")
-            st.write(f"Address: {address}")
-            st.write(f"Birth Date: {birth}")
-            st.write(f"Governorate: {gov}")
-            st.write(f"Gender: {gender}")
+            
+            # Display the dynamic results on screen
+            for key, value in results.items():
+                st.write(f"**{key}:** {value}")
+
+            # --- 2. THE SAVE BUTTON ---
+            if st.button("💾 Save this ID to Excel"):
+                # Check for duplicates based on the National ID
+                if str(results['National ID']) in st.session_state.id_database['National ID'].astype(str).values:
+                    st.error(f"❌ Duplicate Found! ID {results['National ID']} is already in the Excel sheet.")
+                else:
+                    # Add to the list
+                    new_entry = pd.DataFrame([results])
+                    st.session_state.id_database = pd.concat([st.session_state.id_database, new_entry], ignore_index=True)
+                    st.success(f"✅ ID {results['National ID']} added to the list!")
 
         except Exception as e:
             st.error(f"An error occurred: {e}")
         finally:
             os.remove(temp_file_path)
+
+    # --- 3. DOWNLOAD SECTION (Visible on Home Tab) ---
+    st.divider()
+    st.subheader("📋 Scanned IDs List")
+    st.dataframe(st.session_state.id_database)
+    
+    if not st.session_state.id_database.empty:
+        buffer = io.BytesIO()
+        with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
+            st.session_state.id_database.to_excel(writer, index=False)
+        
+        st.download_button(
+            label="📥 Download All Results as Excel",
+            data=buffer.getvalue(),
+            file_name="scanned_ids.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
 
 # Documentation Tab
 elif st.session_state.current_tab == "Guide":
