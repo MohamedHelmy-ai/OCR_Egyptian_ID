@@ -127,9 +127,37 @@ if st.session_state.current_tab == "Home":
 elif st.session_state.current_tab == "Guide":
     st.title("How to use our application 📖")
     st.write("""
-    ## Project Overview:
-    This application processes Egyptian ID cards to extract key information and decodes the national ID.
-    
-    **New Feature: Persistence**
-    The scanned results are now saved to a file on the server. Even if you refresh the page or close the browser, your previous scans will still be there!
+   ## Project Overview:
+    This application processes Egyptian ID cards to extract key information, including names, addresses, and national IDs.  
+    It also decodes the national ID to provide additional details like birth date, governorate, and gender.
+
+    ## Features:
+    - **ID Card Detection**: Automatically detects and crops the ID card from the image.
+    - **Field Detection**: Identifies key fields such as first name, last name, address, and serial number.
+    - **Text Extraction**: Extracts Arabic and English text using EasyOCR.
+    - **National ID Decoding**: Decodes the ID to extract:
+        - Birth Date
+        - Governorate
+        - Gender
+        - Birthplace
+        - Location
+        - Nationality
+
+    ## How It Works:
+    1. **Upload an Image**: Upload an image of the ID card using the sidebar.
+    2. **Detection and Extraction**:
+        - YOLO models detect the ID card and its fields.
+        - EasyOCR extracts text from the identified fields.
+    3. **Result Presentation**:
+        - Outputs extracted information such as full name, address, and national ID details.
+    4. **ID Decoding**:
+        - Decodes the national ID to reveal demographic details.
+
+    ## Steps to Use:
+    - Get your image ready.
+    - Click on Home.
+    - Upload an Egyptian ID card image.
+    - View the extracted information and analysis.
+        
+    ## هI HOPE YOU ENJOY THE EXPERIENCE 💖
     """)
