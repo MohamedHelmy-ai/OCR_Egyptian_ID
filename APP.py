@@ -6,14 +6,58 @@ import pandas as pd
 import io
 from utils import detect_and_process_id_card
 
+# Import libraries for webrtc and image handling
+from streamlit_webrtc import webrtc_streamer, VideoProcessorBase, WebRtcMode
+import av
+import cv2 # Using cv2 for color conversion
+import threading
+
 # Streamlit configuration
 st.set_page_config(page_title='Egyptian ID Card Scanner', page_icon='💳', layout='wide')
+
+# --- CSS for the Visual Guide Overlay ---
+# We define a pseudo-element (::before) to draw the rectangle over the video.
+# This is more robust than trying to overlay HTML elements.
+st.markdown("""
+    <style>
+    .video-container {
+        position: relative;
+        width: 100%;
+    }
+    .video-container video {
+        width: 100%;
+        height: auto;
+        border: 1px solid #ccc;
+        border-radius: 5px;
+    }
+    .video-container::before {
+        content: '';
+        position: absolute;
+        /* Center the rectangle */
+        top: 50%;
+        left: 50%;
+        transform: translate(-50%, -50%);
+        
+        /* ID Card aspect ratio is approx 85.6mm x 53.98mm ~= 1.586 */
+        /* We'll use width and padding-top to maintain aspect ratio */
+        width: 85%; /* Adjust width of the guide */
+        padding-top: 53.5%; /* 85% / 1.586 (aspect ratio) */
+        
+        /* Style the guide */
+        border: 3px dashed rgba(255, 255, 255, 0.7);
+        border-radius: 10px;
+        box-shadow: 0 0 15px rgba(0, 0, 0, 0.5);
+        
+        pointer-events: none; /* Allows clicking 'through' the overlay */
+    }
+    </style>
+""", unsafe_allow_html=True)
+
 
 # --- PERSISTENCE LOGIC ---
 DB_FILE = "database.xlsx"
 
 def load_data():
-    """Loads the Excel database or creates an empty DataFrame."""
     if os.path.exists(DB_FILE):
         try:
             return pd.read_excel(DB_FILE)
@@ -22,15 +66,22 @@ def load_data():
     return pd.DataFrame(columns=['First Name', 'Second Name', 'Full Name', 'National ID', 'Address', 'Birth Date', 'Governorate', 'Gender'])
 
 def save_data(df):
-    """Saves the DataFrame to the Excel database."""
     df.to_excel(DB_FILE, index=False)
+
+# --- WEBRTC FRAME CAPTURING LOGIC ---
+lock = threading.Lock()
+img_container = {"img": None}
+
+class VideoProcessor(VideoProcessorBase):
+    def recv(self, frame: av.VideoFrame) -> av.VideoFrame:
+        img = frame.to_ndarray(format="bgr24")
+        with lock:
+            img_container["img"] = img
+        return frame
 
 # --- IMAGE PROCESSING LOGIC ---
 def process_image_data(image_bytes):
-    """
-    Processes image bytes, runs OCR, and displays results.
-    This function now contains the core logic to avoid code duplication.
-    """
+    # This function remains the same as before
     with tempfile.NamedTemporaryFile(delete=False, suffix=".jpg") as temp_file:
         temp_file.write(image_bytes)
         temp_file_path = temp_file.name
@@ -38,26 +89,18 @@ def process_image_data(image_bytes):
     try:
         image = Image.open(temp_file_path)
         st.subheader('Egyptian ID Card EXTRACTING, OCR 💳')
-        st.sidebar.image(image, caption="Scanned Image")
+        st.sidebar.image(image, caption="Captured Image")
 
-        # Call the main detection and processing function
         first_name, second_name, Full_name, national_id, address, birth, gov, gender = detect_and_process_id_card(temp_file_path)
         
-        # --- FIX: Check if OCR returned valid data ---
-        # If national_id is empty or None, it implies OCR failed.
         if not national_id:
             st.error("Could not extract a National ID. This might be due to a blurry image or poor lighting. Please try taking a clearer picture.")
-            return # Stop further execution
+            return
 
         results = {
-            'First Name': first_name,
-            'Second Name': second_name,
-            'Full Name': Full_name,
-            'National ID': national_id,
-            'Address': address,
-            'Birth Date': birth,
-            'Governorate': gov,
-            'Gender': gender
+            'First Name': first_name, 'Second Name': second_name, 'Full Name': Full_name,
+            'National ID': national_id, 'Address': address, 'Birth Date': birth,
+            'Governorate': gov, 'Gender': gender
         }
 
         if os.path.exists("d2.jpg"):
@@ -65,7 +108,6 @@ def process_image_data(image_bytes):
         
         st.markdown("---")
         st.markdown(" ## WORDS EXTRACTED : ")
-        
         for key, value in results.items():
             st.write(f"**{key}:** {value}")
 
@@ -78,61 +120,84 @@ def process_image_data(image_bytes):
                 save_data(st.session_state.id_database)
                 st.success(f"✅ ID {results['National ID']} saved permanently!")
 
-    # --- FIX: Specific error handling for "string index out of range" ---
     except IndexError:
         st.error("An error occurred: String index out of range. This usually happens when the OCR fails to read the ID card's text correctly. Please use a clearer, well-lit image and try again.")
     except Exception as e:
         st.error(f"An unexpected error occurred: {e}")
     finally:
-        # Clean up the temporary file
         if os.path.exists(temp_file_path):
             os.remove(temp_file_path)
 
-
 # --- MAIN APP LAYOUT ---
-
-# Initialize database in session state
 if 'id_database' not in st.session_state:
     st.session_state.id_database = load_data()
 
-# Sidebar navigation
 st.sidebar.title("Navigation")
 selected_tab = st.sidebar.radio("Go to", ["Home", "Guide"])
 
-# --- HOME TAB ---
 if selected_tab == "Home":
     st.sidebar.divider()
     st.sidebar.header("Scan an ID")
+    st.sidebar.info("Align the ID card within the dashed rectangle and click 'Capture Photo'.")
 
-    # --- NEW: Add Camera Input ---
-    camera_photo = st.sidebar.camera_input(
-        "📷 Take a picture of the ID",
-        help="Click here to use your device's camera."
-    )
+    # --- MODIFIED: Added a container with the CSS class ---
+    with st.sidebar.container():
+        webrtc_ctx = webrtc_streamer(
+            key="id-scanner",
+            mode=WebRtcMode.SENDONLY,
+            video_processor_factory=VideoProcessor,
+            media_stream_constraints={
+                "video": {"facingMode": "environment"},
+                "audio": False,
+            },
+            # Assign the class to the container of the video element
+            video_html_attrs={"class": "video-container"},
+            async_processing=True,
+        )
 
-    # --- MODIFIED: File Uploader ---
+    if webrtc_ctx.state.playing:
+        if st.sidebar.button("📸 Capture Photo"):
+            with lock:
+                img = img_container["img"]
+            if img is not None:
+                st.sidebar.success("Photo captured!")
+                # Convert BGR (from OpenCV) to RGB (for PIL)
+                rgb_img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+                pil_image = Image.fromarray(rgb_img)
+                
+                buf = io.BytesIO()
+                pil_image.save(buf, format="JPEG")
+                image_bytes = buf.getvalue()
+                
+                process_image_data(image_bytes)
+            else:
+                st.sidebar.warning("Camera is starting... please wait a moment and try again.")
+
+    st.sidebar.divider()
     uploaded_file = st.sidebar.file_uploader(
         "📂 Or upload an image",
-        type=['webp', 'jpg', 'tif', 'tiff', 'png', 'mpo', 'bmp', 'jpeg', 'dng', 'pfm']
+        type=['webp', 'jpg', 'png', 'jpeg']
     )
+
+    if uploaded_file:
+        process_image_data(uploaded_file.read())
     
-    image_source = None
-    if camera_photo:
-        image_source = camera_photo
-    elif uploaded_file:
-        image_source = uploaded_file
+    # Logic to show the main page content
+    if 'main_content_placeholder' not in st.session_state:
+        st.session_state.main_content_placeholder = st.empty()
 
-    if image_source is None:
-        st.title("Egyptian ID Card Scanner")
-        if os.path.exists("ocr2.png"):
-            st.image("ocr2.png", use_container_width=True)
-        else:
-            st.info("Welcome! Use the sidebar to take a photo or upload an ID card image to begin.")
-    else:
-        # Process the selected image (from camera or upload)
-        process_image_data(image_source.read())
+    # This part is tricky with reruns. A simple approach:
+    # We only show the welcome image if no image has been processed yet.
+    # A better state management would be needed for complex scenarios.
+    if not uploaded_file and not webrtc_ctx.state.playing:
+        with st.session_state.main_content_placeholder.container():
+            st.title("Egyptian ID Card Scanner")
+            if os.path.exists("ocr2.png"):
+                st.image("ocr2.png", use_container_width=True)
+            else:
+                st.info("Welcome! Use the sidebar to start your camera or upload an ID card image.")
 
-    # --- DOWNLOAD & VIEW SECTION ---
+    # --- DOWNLOAD & VIEW SECTION (in the main area) ---
     st.divider()
     st.subheader("📋 Scanned IDs List (Persistent)")
     
@@ -158,25 +223,41 @@ if selected_tab == "Home":
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         )
 
-# --- GUIDE TAB ---
 elif selected_tab == "Guide":
     st.title("How to use our application 📖")
+    # (Guide content remains the same)
     st.write("""
-    ## Project Overview:
+   ## Project Overview:
     This application processes Egyptian ID cards to extract key information, including names, addresses, and national IDs.  
     It also decodes the national ID to provide additional details like birth date, governorate, and gender.
 
+    ## Features:
+    - **ID Card Detection**: Automatically detects and crops the ID card from the image.
+    - **Field Detection**: Identifies key fields such as first name, last name, address, and serial number.
+    - **Text Extraction**: Extracts Arabic and English text using EasyOCR.
+    - **National ID Decoding**: Decodes the ID to extract:
+        - Birth Date
+        - Governorate
+        - Gender
+        - Birthplace
+        - Location
+        - Nationality
+
     ## How It Works:
-    1. **Provide an Image**: Use the sidebar to either take a photo with your camera or upload an image file of the ID card.
+    1. **Upload an Image**: Upload an image of the ID card using the sidebar.
     2. **Detection and Extraction**:
-        - The app automatically detects and crops the ID card from the image.
-        - It identifies key fields (name, address, etc.).
-        - Advanced OCR extracts the Arabic text from these fields.
+        - YOLO models detect the ID card and its fields.
+        - EasyOCR extracts text from the identified fields.
     3. **Result Presentation**:
-        - The extracted information is displayed on the screen.
-    4. **Save and Download**:
-        - You can save the extracted data to a persistent list.
-        - This list can be downloaded as an Excel file at any time.
+        - Outputs extracted information such as full name, address, and national ID details.
+    4. **ID Decoding**:
+        - Decodes the national ID to reveal demographic details.
+
+    ## Steps to Use:
+    - Get your image ready.
+    - Click on Home.
+    - Upload an Egyptian ID card image.
+    - View the extracted information and analysis.
         
-    ### I HOPE YOU ENJOY THE EXPERIENCE 💖
+    ## هI HOPE YOU ENJOY THE EXPERIENCE 💖
     """)
