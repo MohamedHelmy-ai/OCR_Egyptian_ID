@@ -7,15 +7,15 @@ import io
 import cv2
 import threading
 
-# --- FIX: ALL IMPORTS MOVED TO THE TOP OF THE FILE ---
+# --- All necessary imports are at the top of the file ---
 try:
-    from streamlit_webrtc import webrtc_streamer, VideoProcessorBase, WebRtcMode
+    from streamlit_webrtc import webrtc_streamer, VideoProcessorBase, WebRtcMode, RTCConfiguration
     import av
     # Import your custom utility functions
     from utils import detect_and_process_id_card
 except ImportError as e:
     st.error(f"Failed to import a required library: {e}")
-    st.error("Please ensure all libraries in requirements.txt are installed.")
+    st.error("Please ensure all libraries in your requirements.txt file are installed correctly.")
     st.stop() # Stop the app if essential libraries are missing
 
 # --- Page and Component Configuration ---
@@ -43,12 +43,27 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
+# --- RTC Configuration for STUN/TURN servers ---
+# This is crucial for solving the network connection issue.
+RTC_CONFIGURATION = RTCConfiguration({
+    "iceServers": [
+        {"urls": ["stun:stun.l.google.com:19302"]},
+        # IMPORTANT: Replace with your own free Twilio credentials
+        # Get them from the Twilio console: https://www.twilio.com/console
+        {"urls": ["turn:global.turn.twilio.com:3478?transport=udp"], "username": "ACbd919e436e2ed0747254a4323050cb0c", "credential": "3be01eb529a93f3c858ef812282cfed9"},
+        {"urls": ["turn:global.turn.twilio.com:3478?transport=tcp"], "username": "ACbd919e436e2ed0747254a4323050cb0c", "credential": "3be01eb529a93f3c858ef812282cfed9"}
+    ]
+} )
+
+
 # --- Data Persistence Functions ---
 DB_FILE = "database.xlsx"
 def load_data():
     if os.path.exists(DB_FILE):
-        try: return pd.read_excel(DB_FILE)
-        except Exception: return pd.DataFrame(columns=['First Name', 'Second Name', 'Full Name', 'National ID', 'Address', 'Birth Date', 'Governorate', 'Gender'])
+        try:
+            return pd.read_excel(DB_FILE)
+        except Exception:
+            return pd.DataFrame(columns=['First Name', 'Second Name', 'Full Name', 'National ID', 'Address', 'Birth Date', 'Governorate', 'Gender'])
     return pd.DataFrame(columns=['First Name', 'Second Name', 'Full Name', 'National ID', 'Address', 'Birth Date', 'Governorate', 'Gender'])
 
 def save_data(df):
@@ -66,7 +81,6 @@ class VideoProcessor(VideoProcessorBase):
 
 # --- Core Image Processing and Display Function ---
 def display_results(image_bytes):
-    """Takes image bytes, runs processing, and displays results."""
     st.subheader('Extracted Information')
     with st.spinner('Detecting ID card and extracting text...'):
         with tempfile.NamedTemporaryFile(delete=False, suffix=".jpg") as temp_file:
@@ -99,8 +113,6 @@ def display_results(image_bytes):
                     st.success(f"✅ ID {results['National ID']} saved permanently!")
                     st.rerun()
 
-        except UnboundLocalError:
-            st.error("Critical Error: Failed to detect the ID card in the image. Please ensure the entire card is visible and the picture is clear.")
         except Exception as e:
             st.error(f"An unexpected error occurred during processing: {e}")
         finally:
@@ -129,6 +141,7 @@ if selected_tab == "Home":
             webrtc_ctx = webrtc_streamer(
                 key="id-scanner",
                 mode=WebRtcMode.SENDONLY,
+                rtc_configuration=RTC_CONFIGURATION,
                 video_processor_factory=VideoProcessor,
                 media_stream_constraints={"video": {"facingMode": "environment"}, "audio": False},
                 video_html_attrs={"class": "video-container"},
@@ -195,37 +208,20 @@ if selected_tab == "Home":
 
 elif selected_tab == "Guide":
     st.title("How to use our application 📖")
-    st.write("""## Project Overview:
+    st.write("""
+    ## Project Overview:
     This application processes Egyptian ID cards to extract key information, including names, addresses, and national IDs.  
     It also decodes the national ID to provide additional details like birth date, governorate, and gender.
 
-    ## Features:
-    - **ID Card Detection**: Automatically detects and crops the ID card from the image.
-    - **Field Detection**: Identifies key fields such as first name, last name, address, and serial number.
-    - **Text Extraction**: Extracts Arabic and English text using EasyOCR.
-    - **National ID Decoding**: Decodes the ID to extract:
-        - Birth Date
-        - Governorate
-        - Gender
-        - Birthplace
-        - Location
-        - Nationality
-
     ## How It Works:
-    1. **Upload an Image**: Upload an image of the ID card using the sidebar.
-    2. **Detection and Extraction**:
-        - YOLO models detect the ID card and its fields.
-        - EasyOCR extracts text from the identified fields.
-    3. **Result Presentation**:
-        - Outputs extracted information such as full name, address, and national ID details.
-    4. **ID Decoding**:
-        - Decodes the national ID to reveal demographic details.
-
-    ## Steps to Use:
-    - Get your image ready.
-    - Click on Home.
-    - Upload an Egyptian ID card image.
-    - View the extracted information and analysis.
-        
-    ## هI HOPE YOU ENJOY THE EXPERIENCE 💖
+    1. **Choose Input**: Use the sidebar to select "Camera" or "Upload Image".
+    2. **Camera Mode**:
+        - Click "START" in the Camera View.
+        - Allow browser permission for the camera.
+        - Align your ID card within the dashed rectangle.
+        - Click "Capture Photo" in the sidebar.
+    3. **Upload Mode**:
+        - Drag and drop an image file or browse to select one.
+    4. **View Results**: The extracted information will appear on the right.
+    5. **Save and Download**: You can save the data to a persistent list and download it as an Excel file.
     """)
