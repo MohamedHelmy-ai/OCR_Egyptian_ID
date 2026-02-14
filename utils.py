@@ -2,159 +2,185 @@ from ultralytics import YOLO
 import cv2
 import re
 import easyocr
-from PIL import Image
 
-# --- OPTIMIZATION: Load models and reader only once ---
-# This prevents reloading them on every single image, which is slow.
-try:
-    reader = easyocr.Reader(['ar'], gpu=False)
-    id_card_detector = YOLO('detect_id_card.pt')
-    field_detector = YOLO('detect_odjects.pt')
-    nid_digit_detector = YOLO('detect_id.pt')
-    print("Models and OCR reader loaded successfully.")
-except Exception as e:
-    print(f"Error loading models or EasyOCR reader: {e}")
-    # Handle the case where model files might be missing
-    reader = id_card_detector = field_detector = nid_digit_detector = None
+# Initialize EasyOCR reader (this should be done once for efficiency)
+reader = easyocr.Reader(['ar'], gpu=False)
 
-# --- Helper Functions (No major changes needed here) ---
-
+# Function to preprocess the cropped image
 def preprocess_image(cropped_image):
-    """Converts a cropped image to grayscale."""
-    return cv2.cvtColor(cropped_image, cv2.COLOR_BGR2GRAY)
+    gray_image = cv2.cvtColor(cropped_image, cv2.COLOR_BGR2GRAY)   
+    return  gray_image
 
-def extract_text(image, bbox):
-    """Extracts text from a given bounding box using EasyOCR."""
+# Functions for specific fields with custom OCR configurations
+def extract_text(image, bbox, lang='ara'):
     x1, y1, x2, y2 = bbox
     cropped_image = image[y1:y2, x1:x2]
     preprocessed_image = preprocess_image(cropped_image)
     results = reader.readtext(preprocessed_image, detail=0, paragraph=True)
-    return ' '.join(results).strip()
+    text = ' '.join(results)
+    return text.strip()
 
-def expand_bbox_height(bbox, scale=1.5, image_shape=None):
-    """Expands the height of a bounding box to better capture text."""
+# Function to detect national ID numbers in a cropped image
+def detect_national_id(cropped_image):
+    model = YOLO('detect_id.pt')  # Load the model directly in the function
+    results = model(cropped_image)
+    detected_info = []
+
+    for result in results:
+        for box in result.boxes:
+            cls = int(box.cls)
+            x1, y1, x2, y2 = map(int, box.xyxy[0])
+            detected_info.append((cls, x1))
+            cv2.rectangle(cropped_image, (x1, y1), (x2, y2), (0, 255, 0), 2)
+            cv2.putText(cropped_image, str(cls), (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (36, 255, 12), 2)
+
+    detected_info.sort(key=lambda x: x[1])
+    id_number = ''.join([str(cls) for cls, _ in detected_info])
+    
+    return id_number
+
+# Function to remove numbers from a string
+def remove_numbers(text):
+    return re.sub(r'\d+', '', text)
+
+# Function to expand bounding box height only
+def expand_bbox_height(bbox, scale=1.2, image_shape=None):
     x1, y1, x2, y2 = bbox
+    width = x2 - x1
     height = y2 - y1
+    center_x = x1 + width // 2
     center_y = y1 + height // 2
     new_height = int(height * scale)
     new_y1 = max(center_y - new_height // 2, 0)
     new_y2 = min(center_y + new_height // 2, image_shape[0])
     return [x1, new_y1, x2, new_y2]
 
-def detect_national_id_digits(cropped_nid_image):
-    """Detects individual digits to form the National ID number."""
-    if nid_digit_detector is None: return ""
-    results = nid_digit_detector(cropped_nid_image)
-    detected_info = []
+# Function to process the cropped image
+def process_image(cropped_image):
+    # Load the trained YOLO model for objects (fields) detection
+    model = YOLO('detect_odjects.pt')
+    results = model(cropped_image)
+
+    # Variables to store extracted values
+    first_name = ''
+    second_name = ''
+    merged_name = ''
+    nid = ''
+    address = ''
+    serial = ''
+
+    # Loop through the results
     for result in results:
+        output_path = 'd2.jpg'
+        result.save(output_path)
+
         for box in result.boxes:
-            cls = int(box.cls)
-            x1, _, _, _ = map(int, box.xyxy[0])
-            detected_info.append((cls, x1))
-    
-    detected_info.sort(key=lambda x: x[1])
-    return ''.join([str(cls) for cls, _ in detected_info])
-
-def decode_egyptian_id(id_number):
-    """Decodes a 14-digit Egyptian ID number into structured data."""
-    if not id_number or len(id_number) != 14:
-        return {'Birth Date': '', 'Governorate': '', 'Gender': ''}
-    
-    governorates = {
-        '01': 'Cairo', '02': 'Alexandria', '03': 'Port Said', '04': 'Suez',
-        '11': 'Damietta', '12': 'Dakahlia', '13': 'Ash Sharqia', '14': 'Kaliobeya',
-        '15': 'Kafr El - Sheikh', '16': 'Gharbia', '17': 'Monoufia', '18': 'El Beheira',
-        '19': 'Ismailia', '21': 'Giza', '22': 'Beni Suef', '23': 'Fayoum',
-        '24': 'El Menia', '25': 'Assiut', '26': 'Sohag', '27': 'Qena',
-        '28': 'Aswan', '29': 'Luxor', '31': 'Red Sea', '32': 'New Valley',
-        '33': 'Matrouh', '34': 'North Sinai', '35': 'South Sinai', '88': 'Foreign'
-    }
-    try:
-        century_digit, year, month, day = int(id_number[0]), int(id_number[1:3]), int(id_number[3:5]), int(id_number[5:7])
-        governorate_code, gender_code = id_number[7:9], int(id_number[12])
-        full_year = (1900 if century_digit == 2 else 2000) + year
-        gender = "Male" if gender_code % 2 != 0 else "Female"
-        governorate = governorates.get(governorate_code, "Unknown")
-        birth_date = f"{full_year:04d}-{month:02d}-{day:02d}"
-        return {'Birth Date': birth_date, 'Governorate': governorate, 'Gender': gender}
-    except (ValueError, IndexError):
-        return {'Birth Date': '', 'Governorate': '', 'Gender': ''}
-
-# --- Main Processing Functions ---
-
-def process_fields(cropped_image):
-    """Processes the cropped ID card to extract all text fields."""
-    if field_detector is None:
-        return "", "", "", "", ""
-
-    results = field_detector(cropped_image)
-    first_name, second_name, address, nid = "", "", "", ""
-
-    # Save detection visualization
-    if results:
-        # This is for debugging, you can comment it out later
-        results[0].save(filename='d2.jpg') 
-
-    for result in results:
-        for box in result.boxes:
-            bbox = [int(coord) for coord in box.xyxy[0].tolist()]
-            class_name = result.names[int(box.cls[0].item())]
+            bbox = box.xyxy[0].tolist()
+            class_id = int(box.cls[0].item())
+            class_name = result.names[class_id]
+            bbox = [int(coord) for coord in bbox]
 
             if class_name == 'firstName':
-                first_name = extract_text(cropped_image, bbox)
+                first_name = extract_text(cropped_image, bbox, lang='ara')
             elif class_name == 'lastName':
-                second_name = extract_text(cropped_image, bbox)
+                second_name = extract_text(cropped_image, bbox, lang='ara')
+            elif class_name == 'serial':
+                serial = extract_text(cropped_image, bbox, lang='eng')
             elif class_name == 'address':
-                address = extract_text(cropped_image, bbox)
+                address = extract_text(cropped_image, bbox, lang='ara')
             elif class_name == 'nid':
-                expanded_bbox = expand_bbox_height(bbox, image_shape=cropped_image.shape)
-                cropped_nid_area = cropped_image[expanded_bbox[1]:expanded_bbox[3], expanded_bbox[0]:expanded_bbox[2]]
-                nid = detect_national_id_digits(cropped_nid_area)
-    
-    full_name = f"{first_name} {second_name}".strip()
-    return first_name, second_name, full_name, nid, address
+                expanded_bbox = expand_bbox_height(bbox, scale=1.5, image_shape=cropped_image.shape)
+                cropped_nid = cropped_image[expanded_bbox[1]:expanded_bbox[3], expanded_bbox[0]:expanded_bbox[2]]
+                nid = detect_national_id(cropped_nid)
 
+    merged_name = f"{first_name} {second_name}"
+    print(f"First Name: {first_name}")
+    print(f"Second Name: {second_name}")
+    print(f"Full Name: {merged_name}")
+    print(f"National ID: {nid}")
+    print(f"Address: {address}")
+    print(f"Serial: {serial}")
+
+    decoded_info = decode_egyptian_id(nid)
+    return (first_name, second_name, merged_name, nid, address, decoded_info["Birth Date"], decoded_info["Governorate"], decoded_info["Gender"])
+
+# Function to decode the Egyptian ID number
+def decode_egyptian_id(id_number):
+    governorates = {
+        '01': 'Cairo',
+        '02': 'Alexandria',
+        '03': 'Port Said',
+        '04': 'Suez',
+        '11': 'Damietta',
+        '12': 'Dakahlia',
+        '13': 'Ash Sharqia',
+        '14': 'Kaliobeya',
+        '15': 'Kafr El - Sheikh',
+        '16': 'Gharbia',
+        '17': 'Monoufia',
+        '18': 'El Beheira',
+        '19': 'Ismailia',
+        '21': 'Giza',
+        '22': 'Beni Suef',
+        '23': 'Fayoum',
+        '24': 'El Menia',
+        '25': 'Assiut',
+        '26': 'Sohag',
+        '27': 'Qena',
+        '28': 'Aswan',
+        '29': 'Luxor',
+        '31': 'Red Sea',
+        '32': 'New Valley',
+        '33': 'Matrouh',
+        '34': 'North Sinai',
+        '35': 'South Sinai',
+        '88': 'Foreign'
+    }
+
+    century_digit = int(id_number[0])
+    year = int(id_number[1:3])
+    month = int(id_number[3:5])
+    day = int(id_number[5:7])
+    governorate_code = id_number[7:9]
+    gender_code = int(id_number[12:13])
+
+    if century_digit == 2:
+        century = "1900-1999"
+        full_year = 1900 + year
+    elif century_digit == 3:
+        century = "2000-2099"
+        full_year = 2000 + year
+    else:
+        raise ValueError("Invalid century digit")
+
+    gender = "Male" if gender_code % 2 != 0 else "Female"
+    governorate = governorates.get(governorate_code, "Unknown")
+    birth_date = f"{full_year:04d}-{month:02d}-{day:02d}"
+
+    return {
+        'Birth Date': birth_date,
+        'Governorate': governorate,
+        'Gender': gender
+    }
+
+# Function to detect the ID card and pass it to the existing code
 def detect_and_process_id_card(image_path):
-    """
-    Main function called by app.py. Detects the ID card, crops it,
-    and then processes the cropped image to extract information.
-    Returns empty strings if any step fails.
-    """
-    # --- FIX: Initialize all return values to be empty ---
-    first_name, second_name, full_name, nid, address, birth, gov, gender = "", "", "", "", "", "", "", ""
+    # Load the ID card detection model
+    id_card_model = YOLO('detect_id_card.pt')
 
-    if id_card_detector is None:
-        print("ID Card detector model is not loaded.")
-        return first_name, second_name, full_name, nid, address, birth, gov, gender
+    # Perform inference to detect the ID card
+    id_card_results = id_card_model(image_path)
 
-    try:
-        image = cv2.imread(image_path)
-        if image is None:
-            print(f"Error: Could not read image from path: {image_path}")
-            return first_name, second_name, full_name, nid, address, birth, gov, gender
+    # Load the original image using OpenCV
+    image = cv2.imread(image_path)
 
-        id_card_results = id_card_detector(image)
-        
-        # --- FIX: Initialize cropped_image to None ---
-        cropped_image = None
-        
-        # --- FIX: Check if detection was successful before cropping ---
-        if id_card_results and len(id_card_results[0].boxes) > 0:
-            # Assume the largest detected box is the ID card
-            best_box = max(id_card_results[0].boxes, key=lambda box: (box.xyxy[0][2] - box.xyxy[0][0]) * (box.xyxy[0][3] - box.xyxy[0][1]))
-            x1, y1, x2, y2 = map(int, best_box.xyxy[0])
+    # Crop the ID card from the image
+    for result in id_card_results:
+        for box in result.boxes:
+            x1, y1, x2, y2 = map(int, box.xyxy[0])  # Get bounding box coordinates
             cropped_image = image[y1:y2, x1:x2]
-        else:
-            print("ID card detection failed. No card found in the image.")
 
-        # --- FIX: Only proceed if the ID card was successfully cropped ---
-        if cropped_image is not None:
-            first_name, second_name, full_name, nid, address = process_fields(cropped_image)
-            decoded_info = decode_egyptian_id(nid)
-            birth, gov, gender = decoded_info['Birth Date'], decoded_info['Governorate'], decoded_info['Gender']
-        
-    except Exception as e:
-        print(f"An error occurred during card detection or processing: {e}")
-        # The function will fall through and return the empty strings
+    # Pass the cropped image to the existing processing function
+    return process_image(cropped_image)
 
-    return first_name, second_name, full_name, nid, address, birth, gov, gender
+# print(detect_and_process_id_card("font_ID.jpg"))
