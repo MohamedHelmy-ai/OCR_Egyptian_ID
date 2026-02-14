@@ -44,16 +44,29 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # --- RTC Configuration for STUN/TURN servers ---
-# This is crucial for solving the network connection issue.
+# Using a different public TURN server for testing purposes.
 RTC_CONFIGURATION = RTCConfiguration({
     "iceServers": [
         {"urls": ["stun:stun.l.google.com:19302"]},
-        # IMPORTANT: Replace with your own free Twilio credentials
-        # Get them from the Twilio console: https://www.twilio.com/console
-        {"urls": ["turn:global.turn.twilio.com:3478?transport=udp"], "username": "ACbd919e436e2ed0747254a4323050cb0c", "credential": "3be01eb529a93f3c858ef812282cfed9"},
-        {"urls": ["turn:global.turn.twilio.com:3478?transport=tcp"], "username": "ACbd919e436e2ed0747254a4323050cb0c", "credential": "3be01eb529a93f3c858ef812282cfed9"}
+        {"urls": ["stun:stun.openrelay.net:3478"]},
+        {
+            "urls": ["turn:openrelay.metered.ca:80"],
+            "username": "openrelayproject",
+            "credential": "openrelayproject",
+        },
+        {
+            "urls": ["turn:openrelay.metered.ca:443"],
+            "username": "openrelayproject",
+            "credential": "openrelayproject",
+        },
+        {
+            "urls": ["turn:openrelay.metered.ca:443?transport=tcp"],
+            "username": "openrelayproject",
+            "credential": "openrelayproject",
+        },
     ]
-} )
+})
+
 
 
 # --- Data Persistence Functions ---
@@ -225,3 +238,4 @@ elif selected_tab == "Guide":
     4. **View Results**: The extracted information will appear on the right.
     5. **Save and Download**: You can save the data to a persistent list and download it as an Excel file.
     """)
+
