@@ -4,18 +4,17 @@ from PIL import Image
 import streamlit as st
 import pandas as pd
 import io
-from utils import detect_and_process_id_card
-
-# Import libraries for webrtc and image handling
-from streamlit_webrtc import webrtc_streamer, VideoProcessorBase, WebRtcMode
-import av
 import cv2
 import threading
+import av
 
-# Streamlit configuration
+# Import your custom utility functions
+from utils import detect_and_process_id_card
+
+# --- Page and Component Configuration ---
 st.set_page_config(page_title='Egyptian ID Card Scanner', page_icon='💳', layout="wide")
 
-# --- CSS for the Visual Guide Overlay ---
+# CSS for the visual guide overlay on the camera
 st.markdown("""
     <style>
     .video-container { position: relative; width: 100%; }
@@ -29,19 +28,15 @@ st.markdown("""
         border-radius: 15px;
         box-shadow: 0 0 15px rgba(0, 0, 0, 0.5);
         pointer-events: none;
-        /* Styling for the text inside the guide */
         color: rgba(255, 255, 255, 0.8);
-        font-size: 1.5rem;
-        font-weight: bold;
-        display: flex;
-        align-items: center;
-        justify-content: center;
+        font-size: 1.5rem; font-weight: bold;
+        display: flex; align-items: center; justify-content: center;
         text-shadow: 2px 2px 4px #000000;
     }
     </style>
 """, unsafe_allow_html=True)
 
-# --- PERSISTENCE & WEBRTC LOGIC (No changes here) ---
+# --- Data Persistence Functions ---
 DB_FILE = "database.xlsx"
 def load_data():
     if os.path.exists(DB_FILE):
@@ -52,36 +47,42 @@ def load_data():
 def save_data(df):
     df.to_excel(DB_FILE, index=False)
 
+# --- Real-Time Camera Processing Class ---
 class VideoProcessor(VideoProcessorBase):
     def __init__(self):
         self.frame_lock = threading.Lock()
         self.latest_frame = None
-        self.first_frame_received = threading.Event()
     def recv(self, frame: av.VideoFrame) -> av.VideoFrame:
-        with self.frame_lock: self.latest_frame = frame.to_ndarray(format="bgr24")
-        if not self.first_frame_received.is_set(): self.first_frame_received.set()
+        with self.frame_lock:
+            self.latest_frame = frame.to_ndarray(format="bgr24")
         return frame
-    def get_latest_frame(self):
-        ready = self.first_frame_received.wait(timeout=2)
-        if not ready: return None
-        with self.frame_lock: return self.latest_frame
 
-# --- IMAGE PROCESSING LOGIC (No changes here) ---
-def process_image_data(image_bytes, placeholder):
-    with placeholder.container():
+# --- Core Image Processing and Display Function ---
+def display_results(image_bytes):
+    """Takes image bytes, runs processing, and displays results."""
+    st.subheader('Extracted Information')
+    with st.spinner('Detecting ID card and extracting text...'):
         with tempfile.NamedTemporaryFile(delete=False, suffix=".jpg") as temp_file:
             temp_file.write(image_bytes)
             temp_file_path = temp_file.name
+        
         try:
-            st.subheader('Egyptian ID Card EXTRACTING, OCR 💳')
-            first_name, second_name, Full_name, national_id, address, birth, gov, gender = detect_and_process_id_card(temp_file_path)
-            if not national_id:
-                st.error("Could not extract a National ID. This might be due to a blurry image or poor lighting. Please try taking a clearer picture.")
+            # Call your main processing function from utils.py
+            first_name, second_name, full_name, nid, address, birth, gov, gender = detect_and_process_id_card(temp_file_path)
+            
+            if not nid:
+                st.error("Could not extract a National ID. This might be due to a blurry image, poor lighting, or the ID not being detected. Please try again.")
                 return
-            results = {'First Name': first_name, 'Second Name': second_name, 'Full Name': Full_name, 'National ID': national_id, 'Address': address, 'Birth Date': birth, 'Governorate': gov, 'Gender': gender}
-            st.markdown("---")
-            st.markdown(" ## WORDS EXTRACTED : ")
-            for key, value in results.items(): st.write(f"**{key}:** {value}")
+
+            results = {
+                'First Name': first_name, 'Second Name': second_name, 'Full Name': full_name,
+                'National ID': nid, 'Address': address, 'Birth Date': birth,
+                'Governorate': gov, 'Gender': gender
+            }
+            
+            for key, value in results.items():
+                st.write(f"**{key}:** {value}")
+
             if st.button("💾 Save this ID to Excel"):
                 if str(results['National ID']) in st.session_state.id_database['National ID'].astype(str).values:
                     st.error(f"❌ Duplicate Found! ID {results['National ID']} is already in the list.")
@@ -90,89 +91,115 @@ def process_image_data(image_bytes, placeholder):
                     st.session_state.id_database = pd.concat([st.session_state.id_database, new_entry], ignore_index=True)
                     save_data(st.session_state.id_database)
                     st.success(f"✅ ID {results['National ID']} saved permanently!")
-        except UnboundLocalError:
-            st.error("Error: Failed to detect the ID card in the image. Please ensure the entire card is visible and the picture is clear.")
-        except Exception as e: st.error(f"An unexpected error occurred: {e}")
-        finally:
-            if os.path.exists(temp_file_path): os.remove(temp_file_path)
+                    st.rerun() # Rerun to update the dataframe view
 
-# --- MAIN APP LAYOUT ---
+        except UnboundLocalError:
+            st.error("Critical Error: Failed to detect the ID card in the image. Please ensure the entire card is visible and the picture is clear.")
+        except Exception as e:
+            st.error(f"An unexpected error occurred during processing: {e}")
+        finally:
+            if os.path.exists(temp_file_path):
+                os.remove(temp_file_path)
+
+# --- Main Application ---
+
+# Initialize session state for database
 if 'id_database' not in st.session_state:
     st.session_state.id_database = load_data()
 
+# Sidebar for navigation and controls
 st.sidebar.title("Navigation")
 selected_tab = st.sidebar.radio("Go to", ["Home", "Guide"])
 
 if selected_tab == "Home":
     st.title("Egyptian ID Card Scanner")
     
-    # --- LAYOUT CHANGE: Create two columns on the main page ---
-    col1, col2 = st.columns(2)
-
-    with col1:
-        st.subheader("Camera View")
-        webrtc_ctx = webrtc_streamer(
-            key="id-scanner",
-            mode=WebRtcMode.SENDONLY,
-            video_processor_factory=VideoProcessor,
-            media_stream_constraints={"video": {"facingMode": "environment"}, "audio": False},
-            video_html_attrs={"class": "video-container"},
-            async_processing=True,
-        )
-
-    with col2:
-        st.subheader("Extracted Information")
-        # This placeholder will be filled with the results
-        results_placeholder = st.empty()
-        with results_placeholder.container():
-            st.info("Results will appear here after capturing an image.")
-
-    # --- CONTROLS ARE NOW IN THE SIDEBAR ---
+    # Sidebar controls for image input
     st.sidebar.divider()
     st.sidebar.header("Controls")
-    
-    if webrtc_ctx.state.playing and webrtc_ctx.video_processor:
-        if st.sidebar.button("📸 Capture Photo"):
-            captured_frame = webrtc_ctx.video_processor.get_latest_frame()
-            if captured_frame is not None:
-                st.sidebar.success("Photo captured!")
-                st.sidebar.image(captured_frame, channels="BGR", caption="Last Captured Image")
-                
-                rgb_img = cv2.cvtColor(captured_frame, cv2.COLOR_BGR2RGB)
-                pil_image = Image.fromarray(rgb_img)
-                buf = io.BytesIO()
-                pil_image.save(buf, format="JPEG")
-                image_bytes = buf.getvalue()
-                
-                # Process image and display results in the second column
-                process_image_data(image_bytes, results_placeholder)
-            else:
-                st.sidebar.warning("Camera is not ready. Please wait a moment and try again.")
-    
-    st.sidebar.divider()
-    uploaded_file = st.sidebar.file_uploader("📂 Or upload an image", type=['webp', 'jpg', 'png', 'jpeg'])
-    if uploaded_file:
-        st.sidebar.image(uploaded_file, caption="Uploaded Image")
-        process_image_data(uploaded_file.read(), results_placeholder)
+    input_method = st.sidebar.radio("Choose input method:", ("Camera", "Upload Image"))
 
-    # --- DOWNLOAD & VIEW SECTION (remains at the bottom) ---
+    # --- Main Page Layout ---
+    col1, col2 = st.columns([2, 3]) # Give more space to the results column
+
+    # --- CAMERA MODE ---
+    if input_method == "Camera":
+        with col1:
+            st.subheader("Camera View")
+            webrtc_ctx = webrtc_streamer(
+                key="id-scanner",
+                mode=WebRtcMode.SENDONLY,
+                video_processor_factory=VideoProcessor,
+                media_stream_constraints={"video": {"facingMode": "environment"}, "audio": False},
+                video_html_attrs={"class": "video-container"},
+                async_processing=True,
+            )
+        
+        if webrtc_ctx.state.playing and webrtc_ctx.video_processor:
+            if st.sidebar.button("📸 Capture Photo"):
+                with webrtc_ctx.video_processor.frame_lock:
+                    captured_frame = webrtc_ctx.video_processor.latest_frame
+                
+                if captured_frame is not None:
+                    st.sidebar.success("Photo captured!")
+                    st.sidebar.image(captured_frame, channels="BGR", caption="Last Captured Image")
+                    
+                    # Convert to bytes and process
+                    rgb_img = cv2.cvtColor(captured_frame, cv2.COLOR_BGR2RGB)
+                    pil_image = Image.fromarray(rgb_img)
+                    buf = io.BytesIO()
+                    pil_image.save(buf, format="JPEG")
+                    image_bytes = buf.getvalue()
+                    
+                    with col2:
+                        display_results(image_bytes)
+                else:
+                    st.sidebar.warning("Camera is not ready. Please wait a moment.")
+        with col2:
+            if 'webrtc_ctx' not in locals() or not webrtc_ctx.state.playing:
+                 st.info("Start the camera from the main view to begin scanning.")
+
+    # --- UPLOAD MODE ---
+    elif input_method == "Upload Image":
+        uploaded_file = st.sidebar.file_uploader("Drag and drop or browse files", type=['jpg', 'jpeg', 'png'])
+        
+        if uploaded_file is not None:
+            with col1:
+                st.subheader("Uploaded Image")
+                st.image(uploaded_file, caption="Your uploaded ID card.")
+            with col2:
+                image_bytes = uploaded_file.getvalue()
+                display_results(image_bytes)
+        else:
+            with col1:
+                st.info("Please upload an image file using the control in the sidebar.")
+
+    # --- Scanned IDs Database (always visible) ---
     st.divider()
     st.subheader("📋 Scanned IDs List (Persistent)")
-    # ... (Rest of the code for displaying and downloading the database)
     st.dataframe(st.session_state.id_database, use_container_width=True)
+    
     if not st.session_state.id_database.empty:
+        # Add clear and download buttons to the sidebar for better organization
         if st.sidebar.button("🗑️ Clear All Data"):
             st.session_state.id_database = pd.DataFrame(columns=['First Name', 'Second Name', 'Full Name', 'National ID', 'Address', 'Birth Date', 'Governorate', 'Gender'])
             if os.path.exists(DB_FILE): os.remove(DB_FILE)
             st.success("All data has been cleared.")
             st.rerun()
+        
         buffer = io.BytesIO()
-        with pd.ExcelWriter(buffer, engine='openpyxl') as writer: st.session_state.id_database.to_excel(writer, index=False)
-        st.download_button(label="📥 Download All Results as Excel", data=buffer.getvalue(), file_name="scanned_ids.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+        with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
+            st.session_state.id_database.to_excel(writer, index=False)
+        st.sidebar.download_button(
+            label="📥 Download All Results as Excel",
+            data=buffer.getvalue(),
+            file_name="scanned_ids.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
 
 elif selected_tab == "Guide":
     st.title("How to use our application 📖")
-    st.write("""## Project Overview:
+    st.write(""".## Project Overview:
     This application processes Egyptian ID cards to extract key information, including names, addresses, and national IDs.  
     It also decodes the national ID to provide additional details like birth date, governorate, and gender.
 
@@ -205,4 +232,4 @@ elif selected_tab == "Guide":
     - View the extracted information and analysis.
         
     ## هI HOPE YOU ENJOY THE EXPERIENCE 💖
-    """)# Guide content
+    """)# Your guide content here
