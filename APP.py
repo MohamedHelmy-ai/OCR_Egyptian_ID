@@ -6,10 +6,17 @@ import pandas as pd
 import io
 import cv2
 import threading
-import av
 
-# Import your custom utility functions
-from utils import detect_and_process_id_card
+# --- FIX: ALL IMPORTS MOVED TO THE TOP OF THE FILE ---
+try:
+    from streamlit_webrtc import webrtc_streamer, VideoProcessorBase, WebRtcMode
+    import av
+    # Import your custom utility functions
+    from utils import detect_and_process_id_card
+except ImportError as e:
+    st.error(f"Failed to import a required library: {e}")
+    st.error("Please ensure all libraries in requirements.txt are installed.")
+    st.stop() # Stop the app if essential libraries are missing
 
 # --- Page and Component Configuration ---
 st.set_page_config(page_title='Egyptian ID Card Scanner', page_icon='💳', layout="wide")
@@ -67,7 +74,6 @@ def display_results(image_bytes):
             temp_file_path = temp_file.name
         
         try:
-            # Call your main processing function from utils.py
             first_name, second_name, full_name, nid, address, birth, gov, gender = detect_and_process_id_card(temp_file_path)
             
             if not nid:
@@ -91,7 +97,7 @@ def display_results(image_bytes):
                     st.session_state.id_database = pd.concat([st.session_state.id_database, new_entry], ignore_index=True)
                     save_data(st.session_state.id_database)
                     st.success(f"✅ ID {results['National ID']} saved permanently!")
-                    st.rerun() # Rerun to update the dataframe view
+                    st.rerun()
 
         except UnboundLocalError:
             st.error("Critical Error: Failed to detect the ID card in the image. Please ensure the entire card is visible and the picture is clear.")
@@ -102,27 +108,21 @@ def display_results(image_bytes):
                 os.remove(temp_file_path)
 
 # --- Main Application ---
-
-# Initialize session state for database
 if 'id_database' not in st.session_state:
     st.session_state.id_database = load_data()
 
-# Sidebar for navigation and controls
 st.sidebar.title("Navigation")
 selected_tab = st.sidebar.radio("Go to", ["Home", "Guide"])
 
 if selected_tab == "Home":
     st.title("Egyptian ID Card Scanner")
     
-    # Sidebar controls for image input
     st.sidebar.divider()
     st.sidebar.header("Controls")
     input_method = st.sidebar.radio("Choose input method:", ("Camera", "Upload Image"))
 
-    # --- Main Page Layout ---
-    col1, col2 = st.columns([2, 3]) # Give more space to the results column
+    col1, col2 = st.columns([2, 3])
 
-    # --- CAMERA MODE ---
     if input_method == "Camera":
         with col1:
             st.subheader("Camera View")
@@ -144,7 +144,6 @@ if selected_tab == "Home":
                     st.sidebar.success("Photo captured!")
                     st.sidebar.image(captured_frame, channels="BGR", caption="Last Captured Image")
                     
-                    # Convert to bytes and process
                     rgb_img = cv2.cvtColor(captured_frame, cv2.COLOR_BGR2RGB)
                     pil_image = Image.fromarray(rgb_img)
                     buf = io.BytesIO()
@@ -159,7 +158,6 @@ if selected_tab == "Home":
             if 'webrtc_ctx' not in locals() or not webrtc_ctx.state.playing:
                  st.info("Start the camera from the main view to begin scanning.")
 
-    # --- UPLOAD MODE ---
     elif input_method == "Upload Image":
         uploaded_file = st.sidebar.file_uploader("Drag and drop or browse files", type=['jpg', 'jpeg', 'png'])
         
@@ -174,13 +172,11 @@ if selected_tab == "Home":
             with col1:
                 st.info("Please upload an image file using the control in the sidebar.")
 
-    # --- Scanned IDs Database (always visible) ---
     st.divider()
     st.subheader("📋 Scanned IDs List (Persistent)")
     st.dataframe(st.session_state.id_database, use_container_width=True)
     
     if not st.session_state.id_database.empty:
-        # Add clear and download buttons to the sidebar for better organization
         if st.sidebar.button("🗑️ Clear All Data"):
             st.session_state.id_database = pd.DataFrame(columns=['First Name', 'Second Name', 'Full Name', 'National ID', 'Address', 'Birth Date', 'Governorate', 'Gender'])
             if os.path.exists(DB_FILE): os.remove(DB_FILE)
@@ -199,7 +195,7 @@ if selected_tab == "Home":
 
 elif selected_tab == "Guide":
     st.title("How to use our application 📖")
-    st.write(""".## Project Overview:
+    st.write("""## Project Overview:
     This application processes Egyptian ID cards to extract key information, including names, addresses, and national IDs.  
     It also decodes the national ID to provide additional details like birth date, governorate, and gender.
 
@@ -232,4 +228,4 @@ elif selected_tab == "Guide":
     - View the extracted information and analysis.
         
     ## هI HOPE YOU ENJOY THE EXPERIENCE 💖
-    """)# Your guide content here
+    """)
