@@ -1,9 +1,11 @@
 streamlit
-pillow
-opencv-python
+pandas
+openpyxl
+Pillow
+opencv-python-headless
 numpy
 pytesseract
 ultralytics
 easyocr
-pandas
-openpyxl
+streamlit-webrtc
+av
